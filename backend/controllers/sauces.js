@@ -5,12 +5,14 @@
  */
 
 // Import the required modules
-const Sauce = require('../models/sauce');
 const fs = require('fs');
+const SauceModel = require('../models/sauce');
+const utils = require('../utils');
+const { error } = require('console');
 
 // Controller function to get all Sauces and return them as JSON response
 exports.getAllSauces = (req, res) => {
-    Sauce.find()
+    SauceModel.find()
         .then((sauces) => {
             res.status(200).json(sauces);
         })
@@ -21,7 +23,7 @@ exports.getAllSauces = (req, res) => {
 
 // Controller function to get a single Sauce by its ID and return it as JSON response
 exports.getOneSauce = (req, res) => {
-    Sauce.findOne({ _id: req.params.id })
+    SauceModel.findOne({ _id: req.params.id })
         .then((sauce) => {
             if (!sauce) {
                 res.status(404).json({ error: 'Sauce not found!' });
@@ -36,16 +38,10 @@ exports.getOneSauce = (req, res) => {
 
 // Controller function to create a new Sauce based on the data received in the request body
 exports.createSauce = (req, res) => {
-    // Construct the image URL using the request protocol and host
-    const imageUrl = req.protocol + '://' + req.get('host') + '/images/' + req.file.filename;
-
-    // Parse the sauce data from the request body
-    const sauceData = JSON.parse(req.body.sauce);
-
     // Create a new Sauce instance with data from the request
-    const sauce = new Sauce({
-        ...sauceData,
-        imageUrl: imageUrl,
+    const sauceDocument = new SauceModel({
+        ...JSON.parse(req.body.sauce),
+        imageUrl: utils.createImageUrl(req),
         likes: 0,
         dislikes: 0,
         usersLiked: [],
@@ -53,9 +49,9 @@ exports.createSauce = (req, res) => {
     });
 
     // Save the Sauce to the database
-    sauce.save()
-        .then(() => {
-            res.status(201).json({ message: 'Sauce saved successfully!' });
+    sauceDocument.save()
+        .then((doc) => {
+            res.status(201).json({ _id: doc.id, message: 'Sauce saved successfully!' });
         }
         ).catch((error) => {
             res.status(400).json({ error: error.message });
@@ -67,18 +63,19 @@ exports.modifySauce = (req, res) => {
     // Check if an image is uploaded
     let sauceData = req.body;
 
-    // If an image is uploaded, update imageUrl
-    if (req.file) {
-        if (req.body.sauce) {
-            try {
-                sauceData = JSON.parse(req.body.sauce);
-            } catch (error) {
-                // Handle parsing error
-                res.status(400).json({ error: 'Invalid sauce data format!' });
-                return;
+    if (req.is("multipart/form-data")) {
+        // If an image is uploaded, update imageUrl
+        if (req.file) {
+            if (req.body.sauce) {
+                try {
+                    sauceData = JSON.parse(req.body.sauce);
+                } catch (error) {
+                    res.status(400).json({ error: 'Invalid sauce data format!' });
+                    return;
+                }
             }
+            sauceData.imageUrl = utils.createImageUrl(req)
         }
-        sauceData.imageUrl = req.protocol + '://' + req.get('host') + '/images/' + req.file.filename
     }
 
     // Update the Sauce in the database
@@ -94,17 +91,18 @@ exports.modifySauce = (req, res) => {
 // Controller function to delete a Sauce by its ID from the database and deletes its image file from the file system
 exports.deleteSauce = (req, res) => {
     // Find the Sauce by its ID
-    Sauce.findOne({ _id: req.params.id })
+    SauceModel.findOne({ _id: req.params.id })
         .then((sauce) => {
             if (!sauce) {
-                res.status(404).json({ error: 'Sauce not found!' });
+                res.status(404).json({ error: 'Failed to find the sauce with the given ID!' });
             } else {
                 // Extract the filename from the imageUrl
                 const filename = sauce.imageUrl.split('/images/')[1];
+                console.log(filename);
                 // Delete the file from the file system
                 fs.unlink('images/' + filename, () => {
                     // Delete the Sauce from the database
-                    Sauce.deleteOne({ _id: req.params.id })
+                    SauceModel.deleteOne({ _id: req.params.id })
                         .then(() => {
                             res.status(200).json({ message: 'Sauce deleted successfully!' });
                         })
@@ -124,10 +122,11 @@ exports.likeOrDislikeSauce = (req, res) => {
     const { userId, like } = req.body;
     const sauceId = req.params.id;
 
-    Sauce.findOne({ _id: sauceId })
+    // Find a sauce by its ID
+    SauceModel.findOne({ _id: sauceId })
         .then((sauce) => {
             if (!sauce) {
-                res.status(404).json({ error: 'Sauce not found!' });
+                res.status(404).json({ error: 'Failed to find the sauce with the given ID!' });
                 return;
             }
 
@@ -135,9 +134,8 @@ exports.likeOrDislikeSauce = (req, res) => {
             const alreadyLiked = sauce.usersLiked.includes(userId);
             const alreadyDisliked = sauce.usersDisliked.includes(userId);
 
-            // If user likes (and did not previously like or dislike)
+            // Like the sauce
             if (like === 1 && !alreadyLiked && !alreadyDisliked) {
-                // Like the sauce
                 sauce.likes++;
                 sauce.usersLiked.push(userId);
 
@@ -148,9 +146,8 @@ exports.likeOrDislikeSauce = (req, res) => {
                     sauce.dislikes--;
                 }
             }
-            // If user dislikes (and did not previously like or dislike)
+            // Dislike the sauce
             else if (like === -1 && !alreadyLiked && !alreadyDisliked) {
-                // Dislike the sauce
                 sauce.dislikes++;
                 sauce.usersDisliked.push(userId);
 
@@ -161,18 +158,16 @@ exports.likeOrDislikeSauce = (req, res) => {
                     sauce.likes--;
                 }
             }
-            // If user likes (but already previously liked)
+            // Cancel like if already liked
             else if (like === 0 && alreadyLiked) {
-                // Cancel like
                 sauce.likes--;
                 const index = sauce.usersLiked.indexOf(userId);
                 if (index !== -1) {
                     sauce.usersLiked.splice(index, 1);
                 }
             }
-            // If user dislikes (but already previously disliked)
+            // Cancel dislike if already liked
             else if (like === 0 && alreadyDisliked) {
-                // Cancel dislike
                 sauce.dislikes--;
                 const index = sauce.usersDisliked.indexOf(userId);
                 if (index !== -1) {
@@ -181,7 +176,7 @@ exports.likeOrDislikeSauce = (req, res) => {
             }
 
             // Update the sauce in the database
-            Sauce.updateOne({ _id: sauceId }, sauce)
+            SauceModel.updateOne({ _id: sauceId }, sauce)
                 .then(() => {
                     res.status(200).json({ message: 'Like or dislike updated successfully!' });
                 })
@@ -190,7 +185,6 @@ exports.likeOrDislikeSauce = (req, res) => {
                 });
         })
         .catch((error) => {
-            // Handle sauce not found error
             res.status(404).json({ error: 'Sauce not found!' });
         });
 };
