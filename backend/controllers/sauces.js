@@ -79,7 +79,7 @@ exports.modifySauce = (req, res) => {
     }
 
     // Update the Sauce in the database
-    Sauce.updateOne({ _id: req.params.id }, sauceData)
+    SauceModel.updateOne({ _id: req.params.id }, sauceData)
         .then(() => {
             res.status(200).json({ message: "Sauce updated successfully!" });
         })
